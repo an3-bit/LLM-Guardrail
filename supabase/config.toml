@@ -1,1 +1,7 @@
 project_id = "sckmohsapvbmcraprsqa"
+
+[functions.llm-gateway]
+verify_jwt = false
+
+[functions.guardrails]
+verify_jwt = false

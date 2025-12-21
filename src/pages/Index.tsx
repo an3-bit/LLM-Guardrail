@@ -22,7 +22,7 @@ const Index = () => {
 
       if (result.guardrailsTriggered.length > 0) {
         toast.error('Guardrail Triggered', {
-          description: `${result.guardrailsTriggered.join(', ')} detected. Trust score dropped to ${result.trustScore}.`,
+          description: `${result.guardrailsTriggered.join(', ')} detected. Trust score dropped to ${result.trustScore}. Telemetry sent to Datadog.`,
         });
       } else {
         toast.success('Request Processed', {
@@ -30,14 +30,15 @@ const Index = () => {
         });
       }
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'An error occurred while processing the request.';
       toast.error('Request Failed', {
-        description: 'An error occurred while processing the request.',
+        description: errorMessage,
       });
     }
   };
 
-  const handleReset = () => {
-    resetSystem();
+  const handleReset = async () => {
+    await resetSystem();
     setLastResponse(null);
     setRequestCount(0);
     toast.info('System Reset', {
@@ -48,7 +49,7 @@ const Index = () => {
   const handleRecovery = () => {
     initiateRecovery();
     toast.info('Recovery Initiated', {
-      description: 'Applying remediation measures to restore trust score.',
+      description: 'Applying remediation measures to restore trust score. Event sent to Datadog.',
     });
   };
 
