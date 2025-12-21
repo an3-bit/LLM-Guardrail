@@ -7,20 +7,24 @@ import { GuardrailsPanel } from '@/components/GuardrailsPanel';
 import { RecoveryPanel } from '@/components/RecoveryPanel';
 import { MetricsBar } from '@/components/MetricsBar';
 import { TrustScoreChart, TrustScoreDataPoint } from '@/components/TrustScoreChart';
+import { RiskMetricsPanel } from '@/components/RiskMetricsPanel';
 import { Toaster } from '@/components/ui/sonner';
 import { toast } from 'sonner';
+import type { RiskMetrics } from '@/types/guardrail';
 
 const Index = () => {
   const { state, simulateLLMRequest, initiateRecovery, resetSystem } = useGuardrailSystem();
   const [lastResponse, setLastResponse] = useState<string | null>(null);
   const [requestCount, setRequestCount] = useState(0);
   const [trustHistory, setTrustHistory] = useState<TrustScoreDataPoint[]>([]);
+  const [currentRisks, setCurrentRisks] = useState<RiskMetrics | null>(null);
 
   const handleSendRequest = async (prompt: string, isMalicious: boolean) => {
     try {
       const result = await simulateLLMRequest(prompt, isMalicious);
       setLastResponse(result.response);
       setRequestCount(prev => prev + 1);
+      setCurrentRisks(result.risks);
 
       // Add to trust history
       setTrustHistory(prev => [
@@ -54,6 +58,7 @@ const Index = () => {
     setLastResponse(null);
     setRequestCount(0);
     setTrustHistory([]);
+    setCurrentRisks(null);
     toast.info('System Reset', {
       description: 'All metrics and guardrails have been reset to default state.',
     });
@@ -76,11 +81,15 @@ const Index = () => {
 
         {/* Main Dashboard Grid */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          {/* Left Column - Trust Score & Interaction */}
+          {/* Left Column - Trust Score, Risk Metrics & Interaction */}
           <div className="lg:col-span-5 space-y-6">
             <TrustScoreDisplay
               score={state.trustScore}
               state={state.trustState}
+              isProcessing={state.isProcessing}
+            />
+            <RiskMetricsPanel 
+              risks={currentRisks} 
               isProcessing={state.isProcessing}
             />
             <LLMInteractionPanel
