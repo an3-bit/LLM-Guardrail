@@ -8,6 +8,7 @@ import { RecoveryPanel } from '@/components/RecoveryPanel';
 import { MetricsBar } from '@/components/MetricsBar';
 import { TrustScoreChart, TrustScoreDataPoint } from '@/components/TrustScoreChart';
 import { RiskMetricsPanel } from '@/components/RiskMetricsPanel';
+import { RequestHistoryPanel, RequestHistoryEntry } from '@/components/RequestHistoryPanel';
 import { Toaster } from '@/components/ui/sonner';
 import { toast } from 'sonner';
 import type { RiskMetrics } from '@/types/guardrail';
@@ -18,8 +19,12 @@ const Index = () => {
   const [requestCount, setRequestCount] = useState(0);
   const [trustHistory, setTrustHistory] = useState<TrustScoreDataPoint[]>([]);
   const [currentRisks, setCurrentRisks] = useState<RiskMetrics | null>(null);
+  const [requestHistory, setRequestHistory] = useState<RequestHistoryEntry[]>([]);
+  const [lastPrompt, setLastPrompt] = useState<{ text: string; isMalicious: boolean } | null>(null);
 
   const handleSendRequest = async (prompt: string, isMalicious: boolean) => {
+    setLastPrompt({ text: prompt, isMalicious });
+    
     try {
       const result = await simulateLLMRequest(prompt, isMalicious);
       setLastResponse(result.response);
@@ -28,11 +33,26 @@ const Index = () => {
 
       // Add to trust history
       setTrustHistory(prev => [
-        ...prev.slice(-19), // Keep last 20 entries
+        ...prev.slice(-19),
         {
           timestamp: new Date(),
           score: result.trustScore,
           label: `#${prev.length + 1}`,
+        }
+      ]);
+
+      // Add to request history
+      setRequestHistory(prev => [
+        ...prev,
+        {
+          id: prev.length + 1,
+          timestamp: new Date(),
+          prompt,
+          response: result.response,
+          trustScore: result.trustScore,
+          risks: result.risks,
+          guardrailsTriggered: result.guardrailsTriggered,
+          isMalicious,
         }
       ]);
 
@@ -59,6 +79,8 @@ const Index = () => {
     setRequestCount(0);
     setTrustHistory([]);
     setCurrentRisks(null);
+    setRequestHistory([]);
+    setLastPrompt(null);
     toast.info('System Reset', {
       description: 'All metrics and guardrails have been reset to default state.',
     });
@@ -99,7 +121,7 @@ const Index = () => {
             />
           </div>
 
-          {/* Right Column - Guardrails & Recovery */}
+          {/* Right Column - Guardrails, Recovery & History */}
           <div className="lg:col-span-7 space-y-6">
             <MetricsBar requestCount={requestCount} />
             <TrustScoreChart data={trustHistory} currentScore={state.trustScore} />
@@ -112,6 +134,7 @@ const Index = () => {
                 currentScore={state.trustScore}
               />
             </div>
+            <RequestHistoryPanel history={requestHistory} />
           </div>
         </div>
 
