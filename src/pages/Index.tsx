@@ -6,6 +6,7 @@ import { LLMInteractionPanel } from '@/components/LLMInteractionPanel';
 import { GuardrailsPanel } from '@/components/GuardrailsPanel';
 import { RecoveryPanel } from '@/components/RecoveryPanel';
 import { MetricsBar } from '@/components/MetricsBar';
+import { TrustScoreChart, TrustScoreDataPoint } from '@/components/TrustScoreChart';
 import { Toaster } from '@/components/ui/sonner';
 import { toast } from 'sonner';
 
@@ -13,12 +14,23 @@ const Index = () => {
   const { state, simulateLLMRequest, initiateRecovery, resetSystem } = useGuardrailSystem();
   const [lastResponse, setLastResponse] = useState<string | null>(null);
   const [requestCount, setRequestCount] = useState(0);
+  const [trustHistory, setTrustHistory] = useState<TrustScoreDataPoint[]>([]);
 
   const handleSendRequest = async (prompt: string, isMalicious: boolean) => {
     try {
       const result = await simulateLLMRequest(prompt, isMalicious);
       setLastResponse(result.response);
       setRequestCount(prev => prev + 1);
+
+      // Add to trust history
+      setTrustHistory(prev => [
+        ...prev.slice(-19), // Keep last 20 entries
+        {
+          timestamp: new Date(),
+          score: result.trustScore,
+          label: `#${prev.length + 1}`,
+        }
+      ]);
 
       if (result.guardrailsTriggered.length > 0) {
         toast.error('Guardrail Triggered', {
@@ -41,6 +53,7 @@ const Index = () => {
     await resetSystem();
     setLastResponse(null);
     setRequestCount(0);
+    setTrustHistory([]);
     toast.info('System Reset', {
       description: 'All metrics and guardrails have been reset to default state.',
     });
@@ -80,6 +93,7 @@ const Index = () => {
           {/* Right Column - Guardrails & Recovery */}
           <div className="lg:col-span-7 space-y-6">
             <MetricsBar requestCount={requestCount} />
+            <TrustScoreChart data={trustHistory} currentScore={state.trustScore} />
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <GuardrailsPanel guardrails={state.guardrails} />
               <RecoveryPanel
