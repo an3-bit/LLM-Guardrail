@@ -42,11 +42,18 @@ const calculateEntropy = (text: string): number => {
 // Calculate security risk based on prompt patterns
 const calculateSecurityRisk = (prompt: string): number => {
   let riskScore = 0;
+  let matchCount = 0;
   
   for (const pattern of INJECTION_PATTERNS) {
     if (pattern.test(prompt)) {
-      riskScore += 25;
+      matchCount++;
+      riskScore += 35; // Increased from 25 for more sensitivity
     }
+  }
+  
+  // Multiple matches indicate more sophisticated attack
+  if (matchCount >= 2) {
+    riskScore += 20;
   }
   
   // Check for excessive special characters
@@ -57,7 +64,7 @@ const calculateSecurityRisk = (prompt: string): number => {
   
   // Check for code-like content
   if (/```|<script|eval\(|exec\(/i.test(prompt)) {
-    riskScore += 20;
+    riskScore += 25;
   }
   
   return Math.min(100, riskScore);
@@ -80,7 +87,7 @@ const calculateCostRisk = (prompt: string, response: string): number => {
 
 // Calculate hallucination risk based on response analysis
 const calculateHallucinationRisk = (response: string): number => {
-  let riskScore = 10 + Math.random() * 10;
+  let riskScore = 15 + Math.random() * 10;
   
   // Check for uncertainty markers
   const uncertaintyMarkers = [
@@ -91,23 +98,35 @@ const calculateHallucinationRisk = (response: string): number => {
     /could be/i,
     /approximately/i,
     /around \d+/i,
+    /generally/i,
+    /typically/i,
+    /often/i,
   ];
   
+  let markerCount = 0;
   for (const marker of uncertaintyMarkers) {
     if (marker.test(response)) {
-      riskScore += 5;
+      markerCount++;
+      riskScore += 4;
     }
+  }
+  
+  // Multiple uncertainty markers indicate higher hallucination risk
+  if (markerCount >= 3) {
+    riskScore += 10;
   }
   
   // High entropy in response might indicate hallucination
   const entropy = calculateEntropy(response);
   if (entropy > 4) {
-    riskScore += 10;
+    riskScore += 12;
   }
   
   // Very long responses might have more hallucination risk
   if (response.length > 2000) {
     riskScore += 15;
+  } else if (response.length > 1000) {
+    riskScore += 8;
   }
   
   return Math.min(100, riskScore);
@@ -373,14 +392,14 @@ serve(async (req) => {
       cost: costRisk,
     };
 
-    // Determine triggered guardrails
-    if (hallucinationRisk > 50) {
+    // Determine triggered guardrails (lowered thresholds for better demo responsiveness)
+    if (hallucinationRisk > 40) {
       guardrailsTriggered.push('hallucination');
     }
-    if (securityRisk > 50) {
+    if (securityRisk > 30) {
       guardrailsTriggered.push('security');
     }
-    if (costRisk > 60) {
+    if (costRisk > 50) {
       guardrailsTriggered.push('cost');
     }
 
