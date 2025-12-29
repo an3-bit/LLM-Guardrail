@@ -484,6 +484,9 @@ const sendDatadogLLMSpans = async (payload: {
   });
 };
 
+// Allow overriding listen port via PORT env for local dev; default to 54321.
+const port = Number(Deno.env.get('PORT') ?? '54321');
+
 serve(async (req: Request) => {
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {
@@ -555,55 +558,58 @@ serve(async (req: Request) => {
       );
     }
 
-    // Call Lovable AI Gateway (Gemini)
+    // Call Lovable AI Gateway (Gemini); fall back to mock if not configured for local demos
     const LOVABLE_API_KEY = Deno.env.get('LOVABLE_API_KEY');
+    let responseContent: string;
+
     if (!LOVABLE_API_KEY) {
-      throw new Error('LOVABLE_API_KEY is not configured');
-    }
+      console.warn('LOVABLE_API_KEY not set; using mock response for local testing');
+      responseContent = '[MOCK] This is a locally mocked response because LOVABLE_API_KEY is not configured.';
+    } else {
+      const aiResponse = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${LOVABLE_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'google/gemini-2.5-flash',
+          messages: [
+            {
+              role: 'system',
+              content: 'You are a helpful AI assistant. Provide clear, accurate, and safe responses. If you are unsure about something, acknowledge the uncertainty.',
+            },
+            {
+              role: 'user',
+              content: prompt,
+            },
+          ],
+          max_tokens: 1000,
+        }),
+      });
 
-    const aiResponse = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${LOVABLE_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'google/gemini-2.5-flash',
-        messages: [
-          {
-            role: 'system',
-            content: 'You are a helpful AI assistant. Provide clear, accurate, and safe responses. If you are unsure about something, acknowledge the uncertainty.',
-          },
-          {
-            role: 'user',
-            content: prompt,
-          },
-        ],
-        max_tokens: 1000,
-      }),
-    });
-
-    if (!aiResponse.ok) {
-      if (aiResponse.status === 429) {
-        return new Response(
-          JSON.stringify({ error: 'Rate limit exceeded. Please try again later.' }),
-          { status: 429, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        );
+      if (!aiResponse.ok) {
+        if (aiResponse.status === 429) {
+          return new Response(
+            JSON.stringify({ error: 'Rate limit exceeded. Please try again later.' }),
+            { status: 429, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
+        if (aiResponse.status === 402) {
+          return new Response(
+            JSON.stringify({ error: 'AI credits exhausted. Please add credits to continue.' }),
+            { status: 402, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
+        
+        const errorText = await aiResponse.text();
+        console.error('AI gateway error:', aiResponse.status, errorText);
+        throw new Error(`AI gateway error: ${aiResponse.status}`);
       }
-      if (aiResponse.status === 402) {
-        return new Response(
-          JSON.stringify({ error: 'AI credits exhausted. Please add credits to continue.' }),
-          { status: 402, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        );
-      }
-      
-      const errorText = await aiResponse.text();
-      console.error('AI gateway error:', aiResponse.status, errorText);
-      throw new Error(`AI gateway error: ${aiResponse.status}`);
-    }
 
-    const aiData = await aiResponse.json();
-    const responseContent = aiData.choices?.[0]?.message?.content || 'No response generated.';
+      const aiData = await aiResponse.json();
+      responseContent = aiData.choices?.[0]?.message?.content || 'No response generated.';
+    }
 
     // Calculate risk metrics
     const hallucinationRisk = calculateHallucinationRisk(responseContent);
@@ -675,4 +681,4 @@ serve(async (req: Request) => {
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   }
-});
+}, { port });
