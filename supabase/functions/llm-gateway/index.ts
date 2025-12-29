@@ -1,3 +1,5 @@
+/// <reference types="https://deno.land/x/deno/cli/dts/lib.deno.d.ts" />
+// @ts-nocheck
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 
 const corsHeaders = {
@@ -138,6 +140,81 @@ const calculateTrustScore = (risks: { hallucination: number; security: number; c
   return Math.max(0, Math.min(100, Math.round(score)));
 };
 
+// Create Datadog incident for critical guardrail triggers
+const createDatadogIncident = async (metrics: {
+  trustScore: number;
+  risks: { hallucination: number; security: number; cost: number };
+  guardrailsTriggered: string[];
+  latencyMs: number;
+}) => {
+  const DATADOG_API_KEY = Deno.env.get('DATADOG_API_KEY');
+  
+  if (!DATADOG_API_KEY) {
+    return;
+  }
+
+  try {
+    // Determine severity and urgency
+    let severity = 'low';
+    let urgency = 'low';
+    
+    if (metrics.trustScore < 40) {
+      severity = 'critical';
+      urgency = 'high';
+    } else if (metrics.trustScore < 60) {
+      severity = 'high';
+      urgency = 'medium';
+    }
+
+    // Build incident description with contextual information
+    const riskSummary = `
+Hallucination Risk: ${Math.round(metrics.risks.hallucination)}%
+Security Risk: ${Math.round(metrics.risks.security)}%
+Cost Risk: ${Math.round(metrics.risks.cost)}%
+Latency: ${metrics.latencyMs}ms
+    `.trim();
+
+    const incidentPayload = {
+      data: {
+        type: 'incidents',
+        attributes: {
+          title: `[${severity.toUpperCase()}] LLM Guardrail Triggered - Trust Score ${metrics.trustScore}`,
+          description: `Guardrails triggered: ${metrics.guardrailsTriggered.join(', ')}\n\n${riskSummary}\n\nImmediate action required. Review logs and risk metrics in Datadog dashboard.`,
+          severity: severity.toUpperCase(),
+          customer_impact_scope: 'All Users',
+          customer_impact_start: new Date().toISOString(),
+          fields: {
+            state: {
+              type: 'dropdown',
+              value: 'active',
+            },
+          },
+          notification_handles: [''],
+        },
+      },
+    };
+
+    const incidentResponse = await fetch('https://api.datadoghq.com/api/v2/incidents', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'DD-API-KEY': DATADOG_API_KEY,
+      },
+      body: JSON.stringify(incidentPayload),
+    });
+
+    if (incidentResponse.ok) {
+      const incidentData = await incidentResponse.json();
+      console.log(`Datadog incident created: ${incidentData.data.id}`);
+      return incidentData.data.id;
+    } else {
+      console.error('Failed to create incident:', incidentResponse.status);
+    }
+  } catch (error) {
+    console.error('Error creating Datadog incident:', error);
+  }
+};
+
 // Send telemetry to Datadog
 const sendDatadogTelemetry = async (metrics: {
   trustScore: number;
@@ -267,12 +344,147 @@ const sendDatadogTelemetry = async (metrics: {
     });
 
     console.log('Datadog log sent successfully');
+
+    // Create incident if guardrails triggered and trust score is low
+    if (metrics.guardrailsTriggered.length > 0 && metrics.trustScore < 70) {
+      await createDatadogIncident(metrics);
+    }
   } catch (error) {
     console.error('Error sending Datadog telemetry:', error);
   }
 };
 
-serve(async (req) => {
+const sendDatadogLLMSpans = async (payload: {
+  appName: string;
+  prompt: string;
+  response: string;
+  startTimeMs: number;
+  latencyMs: number;
+  promptTokens: number;
+  responseTokens: number;
+  modelName: string;
+  guardrailsTriggered: string[];
+}) => {
+  const DATADOG_API_KEY = Deno.env.get('DATADOG_API_KEY');
+  if (!DATADOG_API_KEY) return;
+
+  const startNs = (BigInt(payload.startTimeMs) * 1000000n).toString();
+  const durationNs = (BigInt(Math.max(1, Math.round(payload.latencyMs))) * 1000000n).toString();
+
+  const makeId = () => `${Date.now()}${Math.floor(Math.random() * 1_000_000)}`;
+  const traceId = makeId();
+  const agentSpanId = makeId();
+  const workflowSpanId = makeId();
+  const llmSpanId = makeId();
+
+  const tags = [
+    'service:llm-guardrail',
+    'env:production',
+    ...payload.guardrailsTriggered.map(g => `guardrail:${g}`),
+  ];
+
+  const body = {
+    data: {
+      type: 'span',
+      attributes: {
+        ml_app: payload.appName,
+        session_id: `${Date.now()}`,
+        tags,
+        spans: [
+          {
+            parent_id: 'undefined',
+            trace_id: traceId,
+            span_id: agentSpanId,
+            name: 'guardrail_agent',
+            meta: {
+              kind: 'agent',
+              input: { value: payload.prompt },
+              output: { value: payload.response },
+              metadata: {
+                model_name: payload.modelName,
+                model_provider: 'google',
+              },
+            },
+            start_ns: startNs,
+            duration: durationNs,
+            metrics: {
+              input_tokens: Math.max(0, Math.floor(payload.promptTokens)),
+              output_tokens: Math.max(0, Math.floor(payload.responseTokens)),
+              total_tokens: Math.max(0, Math.floor(payload.promptTokens + payload.responseTokens)),
+            },
+            tags,
+          },
+          {
+            parent_id: agentSpanId,
+            trace_id: traceId,
+            span_id: workflowSpanId,
+            name: 'trust_risk_workflow',
+            meta: {
+              kind: 'workflow',
+              input: { value: payload.prompt },
+              output: { value: payload.response },
+            },
+            start_ns: startNs,
+            duration: durationNs,
+            tags,
+          },
+          {
+            parent_id: workflowSpanId,
+            trace_id: traceId,
+            span_id: llmSpanId,
+            name: 'generate_response',
+            meta: {
+              kind: 'llm',
+              input: {
+                messages: [
+                  { role: 'system', content: 'You are a helpful AI assistant. Provide clear, accurate, and safe responses.' },
+                  { role: 'user', content: payload.prompt },
+                ],
+                prompt: {
+                  id: 'default-system-prompt',
+                  chat_template: [
+                    { role: 'system', content: 'You are a helpful AI assistant. Provide clear, accurate, and safe responses.' },
+                    { role: 'user', content: '{{user_input}}' },
+                  ],
+                  variables: { user_input: payload.prompt },
+                },
+              },
+              output: {
+                messages: [
+                  { role: 'assistant', content: payload.response },
+                ],
+              },
+              metadata: {
+                model_name: payload.modelName,
+                model_provider: 'google',
+                max_tokens: 1000,
+              },
+            },
+            start_ns: startNs,
+            duration: durationNs,
+            metrics: {
+              input_tokens: Math.max(0, Math.floor(payload.promptTokens)),
+              output_tokens: Math.max(0, Math.floor(payload.responseTokens)),
+              total_tokens: Math.max(0, Math.floor(payload.promptTokens + payload.responseTokens)),
+            },
+            tags,
+          },
+        ],
+      },
+    },
+  };
+
+  await fetch('https://api.datadoghq.com/api/intake/llm-obs/v1/trace/spans', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'DD-API-KEY': DATADOG_API_KEY,
+    },
+    body: JSON.stringify(body),
+  });
+};
+
+serve(async (req: Request) => {
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
@@ -318,6 +530,18 @@ serve(async (req) => {
         responseLength: 0,
         latencyMs,
       }).catch(err => console.error('Telemetry error:', err));
+
+      sendDatadogLLMSpans({
+        appName: 'llm-guardrail',
+        prompt,
+        response: '[BLOCKED] Prompt injection attempt detected. Request has been logged and flagged for security review.',
+        startTimeMs: startTime,
+        latencyMs,
+        promptTokens: Math.ceil(prompt.length / 4),
+        responseTokens: 0,
+        modelName: 'google/gemini-2.5-flash',
+        guardrailsTriggered,
+      }).catch(err => console.error('LLM spans error:', err));
 
       return new Response(
         JSON.stringify({
@@ -417,6 +641,18 @@ serve(async (req) => {
       responseLength: responseContent.length,
       latencyMs,
     }).catch(err => console.error('Telemetry error:', err));
+
+    sendDatadogLLMSpans({
+      appName: 'llm-guardrail',
+      prompt,
+      response: responseContent,
+      startTimeMs: startTime,
+      latencyMs,
+      promptTokens: Math.ceil(prompt.length / 4),
+      responseTokens: Math.ceil(responseContent.length / 4),
+      modelName: 'google/gemini-2.5-flash',
+      guardrailsTriggered,
+    }).catch(err => console.error('LLM spans error:', err));
 
     return new Response(
       JSON.stringify({
